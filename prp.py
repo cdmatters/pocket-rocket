@@ -1,4 +1,6 @@
+#!/usr/local/bin/python3
 import asyncio
+import argparse
 import sys
 import re
 
@@ -18,7 +20,30 @@ CYAN = "\033[36m"
 WHITE = "\033[37m"
 DEFAULT = "\033[39m"
 
+ERROR_COLOUR = RED
+WARNING_COLOUR = YELLOW
+HELP_COLOUR = CYAN
+PROMPT_COLOUR = WHITE
+HISTORY_COLOUR = GREEN
+
 LAST_LINE = None
+
+COMMANDS = { 
+    #TYPE: set( shortcuts )
+    "HELP":[ "h","help"],
+    "HISTORY":["p", "past","history" ],
+    "MOVE": ["r", "raise", "c", "call", "f", "fold", "_", "check", "A", "all_in", "allin", "all-in"], 
+    "CHIPS": ["£","$","chips", "money", "chip", "cash" ],
+    "STATUS": ["?","s", "status", "stat" ]
+}
+
+LOOKUP_COMMANDS = {shortcuts:c for c in COMMANDS for shortcuts in COMMANDS[c]}
+
+class InvalidCommandError(Exception):
+    '''This command is not recognised'''
+    def __init__(self, message, colour=ERROR_COLOUR):
+        super(InvalidCommandError, self).__init__(message)
+        self.colour = colour
 
 def colour(s,c):
     return "".join([c,s,DEFAULT])
@@ -31,7 +56,11 @@ def clear_up_line():
     sys.stdout.write('\033[K')
 
 def prompt(name):
-    sys.stdout.write(">>>{}<<<\n".format(name))
+    sys.stdout.write(colour(">>>{}<<<\n".format(name), PROMPT_COLOUR))
+
+def log_exception(e):
+    clear_up_line()
+    sys.stdout.write(colour(str(e), e.colour))
 
 def write_to_file(name, string):
     # blocking
@@ -39,26 +68,55 @@ def write_to_file(name, string):
         f.write(string)
 
 def on_std_input():
-    line = escaped(sys.stdin.readline())
+    line = escaped(sys.stdin.readline()).lower()
 
-    instructions = parse_line(line)
-    request = instructions["type"]
+    try:
+        instructions = parse_line(line)
+        request = instructions["type"]
+        if request == "MOVE":
+            if is_valid(instructions["move"]):
+                asyncio.ensure_future(LOOP.run_in_executor(None, write_to_file, COMMON_FILE, line))
+                clear_up_line()
+            else:
+                raise InvalidCommandError("invalid?: " + line, WARNING_COLOUR)
+        elif request == "STATUS":
+            print_status()
+        elif request == "HELP":
+            print_help()
+        elif request == "HISTORY":
+            print_history()
+        elif request == "CHIPS":
+            print_history()
+    except InvalidCommandError as e:
+        log_exception(e)
 
-    if request == "MOVE":
-        if is_valid(instructions["move"]):
-            asyncio.ensure_future(LOOP.run_in_executor(None, write_to_file, COMMON_FILE, line))
-            clear_up_line()
-        else:
-            clear_up_line()
-            print(colour("WAIT YOUR TURN", RED))
-    elif request == "NEXT":
-        pass
 
 def parse_line(line):
-    return {"type":"MOVE", "move":"r50"}
+
+    words = line.split()
+    if words[0] in LOOKUP_COMMANDS: # eg "raise 100"
+        return {"type": LOOKUP_COMMANDS[words[0]], "move":words}
+    elif words[0][0] in LOOKUP_COMMANDS and words[0][1] in "0987654321": # eg "r100"
+        return {"type": LOOKUP_COMMANDS[words[0][0]], "move":words}
+    else:
+        raise InvalidCommandError("nope: " + line, ERROR_COLOUR)
 
 def is_valid(move):
     return True
+
+def print_help():
+    help_string = "\n".join([ c + " -> " + "|".join(COMMANDS[c]) for c in COMMANDS])
+    clear_up_line()
+    print(colour(help_string, HELP_COLOUR))
+
+def print_status():
+    pass
+
+def print_history():
+    pass
+
+def print_chips():
+    pass
 
 async def process_common_output(fd):
     async for move in read_forever(fd):
@@ -66,7 +124,7 @@ async def process_common_output(fd):
         LAST_LINE = move
         clear_up_line()
         print(highlight(move))
-        prompt(move)
+        prompt("PLAYER to play")
 
 async def read_forever(fd):
     while True:
@@ -76,9 +134,10 @@ async def read_forever(fd):
 
 def highlight(move):
     if move:
-        return colour(move, YELLOW)
+        return colour(move, HISTORY_COLOUR)
 
 if __name__=="__main__":
+
     com_fd = open(COMMON_FILE, "r")
 
     LOOP.add_reader(sys.stdin.fileno(), on_std_input)
