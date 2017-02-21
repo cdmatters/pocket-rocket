@@ -213,8 +213,8 @@ class Tournament(object):
         self.ready_to_deal = False
         if name == PLAYER.name:
             unhashed = PLAYER.unhash(card_hash)
+            self.current_game.my_cards = unhashed
             hs = hand_string.format(name=name, cards=unhashed)
-            self.current_game.my_cards = hs
             return hs, MY_CARD_COLOUR
         else:
             hs = hand_string.format(name=name, cards=card_hash)
@@ -267,10 +267,19 @@ class Tournament(object):
         if owner_to_deal and len(self.current_game.players) > 1:
             self.prompt = ["ready to start? type D to deal."]
         elif mid_game:
-            hud =[ "waiting for {}".format(self.next_to_play()) ]
-            if self.is_owner:
-                hud.append("KS-2C : 2S-TS-KS-2S-AS : P3750: C5000: L250")
-            self.prompt = hud
+            sc = self.current_game.shared_cards[:]
+            sc.extend(["++"]*(5-len(sc)))
+            hud = {
+                "cards": self.current_game.my_cards,
+                "deck": "-".join(sc),
+                "pot": 3750,
+                "chips": 5000,
+                "last_raise": 450
+            }
+            self.prompt =[ 
+                "waiting for {}".format(self.next_to_play()), 
+                "{cards} : {deck} : P{pot}: C{chips}: L{last_raise}".format(**hud)]
+
 
     def process_as_owner(self, moves):
         
@@ -300,7 +309,7 @@ class Game(object):
         self.is_owner = is_owner
         self.deck = Deck() if is_owner else None
         self.my_cards = None
-        self.shared_careds = []
+        self.shared_cards = ["AC", "JS", "2D"]
         self.dealer = dealer
         self.to_play = dealer + 3
 
