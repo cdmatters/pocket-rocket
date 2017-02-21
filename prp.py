@@ -13,7 +13,6 @@ if not os.path.exists(".prp"):
     os.makedirs(".prp")
 
 COMMON_FILE = ".prp/prp_com_{}"
-PRIVATE_FILE = ".prp/prp_priv_{}"
 
 LOOP = asyncio.get_event_loop()
 
@@ -37,10 +36,7 @@ PLAYER = None
 TOURNAMENT = None
 
 LAST_LINE = None
-NEXT_TO_PLAY = ""
 START_CHIPS = 500
-
-IS_DEALER = False
 
 MOVE_COMMANDS = {
     "RAISE" : ["r", "raise", "raise_to"],
@@ -62,11 +58,8 @@ COMMANDS = {
 }
 LOOKUP_COMMANDS = {shortcuts:c for c in COMMANDS for shortcuts in COMMANDS[c]}
 
-class InvalidCommandError(Exception):
-    '''This command is not recognised'''
-    def __init__(self, message, colour=ERROR_COLOUR):
-        super(InvalidCommandError, self).__init__(message)
-        self.colour = colour
+####### -------- AUX METHODS --------- ######
+### ------------------------------------- ###
 
 def colour(s,c):
     return "".join([c,s,DEFAULT])
@@ -74,40 +67,57 @@ def colour(s,c):
 def escaped(s):
     return ANSI_ESCAPE.sub('', s)
 
-def clear_up_line():
-    sys.stdout.write('\033[A')
-    sys.stdout.write('\033[K')
-    sys.stdout.flush()
+def clear_up_line(n):
+    for _ in range(n):
+        sys.stdout.write('\033[A')
+        sys.stdout.write('\033[K')
+        sys.stdout.flush()
 
-def prompt(name):
-    sys.stdout.write(colour(">>>{}<<<\n".format(name), PROMPT_COLOUR))
-    sys.stdout.flush()
+def prompt(p_list):
+    p_list[0] = ">>>  " + p_list[0]
+    p_list[-1] = p_list[-1] + "  <<<"
+
+    print(colour(" <<<\n>>>  ".join(p_list), PROMPT_COLOUR))
 
 def log_exception(e):
-    clear_up_line()
-    sys.stdout.write(colour(str(e), e.colour))
-    sys.stdout.flush()
+    clear_up_line(1)
+    print(colour(str(e), e.colour))
 
 def write_to_file(file, string):
     # blocking
     with open(file, "a") as f:
         f.write(string)
+        f.write("\n")
 
 def async_write(string):
     asyncio.ensure_future(LOOP.run_in_executor(None, write_to_file, COMMON_FILE, string))
-    
+
+async def read_forever(fd):
+    while True:
+        l = await asyncio.ensure_future(LOOP.run_in_executor(None, fd.readline))
+        if l and l.strip():
+            yield l.strip()
+
+class InvalidCommandError(Exception):
+    '''This command is not recognised'''
+    def __init__(self, message, colour=ERROR_COLOUR):
+        super(InvalidCommandError, self).__init__(message)
+        self.colour = colour
+
+####### ---------- PLAYER INPUT ------------- ######
+### -------------------------------------------- ###
+
 def on_std_input():
     line = escaped(sys.stdin.readline()).lower().strip()
     if not line:
         return 
-
     try:
         instructions = parse_line(line)
         request = instructions["type"]
         if request == "MOVE":
             move_line = validate_move(instructions["move"])
             async_write(move_line)
-            clear_up_line()
+            clear_up_line(1)
         elif request == "STATUS":
             print_status()
         elif request == "HELP":
@@ -118,45 +128,47 @@ def on_std_input():
             print_history()
     except InvalidCommandError as e:
         log_exception(e)
-    except IndexError as e:
+    except (IndexError, ValueError )as e:
         e.colour = RED
         log_exception(e)
-    # yield from asyncio.sleep(0.3)
+
 
 def parse_line(line):
     words = line.split()
     if words[0] in LOOKUP_COMMANDS: # eg "raise 100"
         return {"type": LOOKUP_COMMANDS[words[0]], "move":words,}
     elif words[0][0] in LOOKUP_COMMANDS and words[0][1] in "0987654321": # eg "r100"
-        return {"type": LOOKUP_COMMANDS[words[0][0]], "move":[words[0][0], words[0][1]]}
+        return {"type": LOOKUP_COMMANDS[words[0][0]], "move":[words[0][0], int(words[0][1:])]}
     else:
-        raise InvalidCommandError("nope: {}\n".format(line), ERROR_COLOUR)
+        raise InvalidCommandError("nope: {}".format(line), ERROR_COLOUR)
 
 def validate_move(move):
-    if LOOKUP_MOVE_COMMANDS[move[0]]=="DEAL":
-        if TOURNAMENT.start_game and TOURNAMENT.is_owner:
-            TOURNAMENT.start_game = False
-            return TOURNAMENT.deal_hands_request()
-        else :
-            InvalidCommandError("you cant do this now\n", WARNING_COLOUR)
-    elif NEXT_TO_PLAY != PLAYER.name:
-        raise InvalidCommandError("WAIT YOUR TURN\n", WARNING_COLOUR)
-    elif LOOKUP_MOVE_COMMANDS[move[0]]=="RAISE":
-        return "move {name} raises {value}"
-    elif LOOKUP_MOVE_COMMANDS[move[0]]=="CALL":
-        return "move {name} call {value}"
-    elif LOOKUP_MOVE_COMMANDS[move[0]]=="CHECK":
+    this_move = LOOKUP_MOVE_COMMANDS[move[0]]
+    if this_move == "DEAL":
+        if TOURNAMENT.ready_to_deal and TOURNAMENT.is_owner:
+            # should lock on a few things here: current game != None, 2 players etc
+            TOURNAMENT.ready_to_deal = False
+            return TOURNAMENT.deal_hands()
+        else:
+            raise InvalidCommandError("you cant do this now", WARNING_COLOUR)
+    elif TOURNAMENT.next_to_play() != PLAYER.name:
+        raise InvalidCommandError("WAIT YOUR TURN", WARNING_COLOUR)
+    elif this_move == "RAISE":
+        return "move {name} raises {value}".format(name=PLAYER.name, value=move[1])
+    elif this_move == "CALL":
+        return "move {name} call {value}".format(name=PLAYER.name, value=move[1])
+    elif this_move == "CHECK":
         return "move {name} checks".format(name=PLAYER.name)
-    elif LOOKUP_MOVE_COMMANDS[move[0]]=="FOLD":
+    elif this_move == "FOLD":
         return "move {name} folds".format(name=PLAYER.name)
-    elif LOOKUP_MOVE_COMMANDS[move[0]]=="ALL_IN":
-        return "move {name} is all in with {value}"
+    elif this_move == "ALL_IN":
+        return "move {name} is all in with {value}".format(name=PLAYER.name, value=move[1])
     else:
-        raise InvalidCommandError("invalid?: {}\n".format(move), WARNING_COLOUR)
+        raise InvalidCommandError("invalid?: {}".format(move), WARNING_COLOUR)
 
 def print_help():
     help_string = "\n".join([ c + " -> " + "|".join(COMMANDS[c]) for c in COMMANDS])
-    clear_up_line()
+    clear_up_line(1)
     print(colour(help_string, HELP_COLOUR))
 
 def print_status():
@@ -168,144 +180,150 @@ def print_history():
 def print_chips():
     pass
 
+####### ---------- PLAYER OUTPUT ------------- ######
+### --------------------------------------------- ###
+
 async def process_common_output(read_fd, tournament):
-    start_request = tournament.start_request(PLAYER)
-    async_write(start_request)    
+    add_player_request = tournament.add_player_request(PLAYER)
+    async_write(add_player_request)    
     print()
     async for move in read_forever(read_fd):
         processed_line, col = tournament.process(move)
-        clear_up_line()
+        clear_up_line(len(tournament.prompt))
+        
         if processed_line:
             print(colour(processed_line, col))
+        
         prompt(tournament.prompt)
-
-
-
-async def read_forever(fd):
-    while True:
-        l = await asyncio.ensure_future(LOOP.run_in_executor(None, fd.readline))
-        if l and l.strip():
-            yield l.strip()
 
 class Tournament(object):
     """runs a tournament."""
     def __init__(self, is_owner):
         self.players = []
         self.is_owner = is_owner
-        self.start_game = False
+        self.ready_to_deal = True
         self.current_game = None
         self.current_players = []
-        self.prompt = "waiting for players" if is_owner else "waiting for dealer"
-        
-    def process(self, move):
-        global NEXT_TO_PLAY
+        self.prompt = ["waiting for players"] if is_owner else ["waiting for dealer"]
+        self.dealer = 0 #me 
 
+
+    def process_hands(self, name, card_hash):
+        hand_string = "{name} -> {cards}"
+        self.ready_to_deal = False
+        if name == PLAYER.name:
+            unhashed = PLAYER.unhash(card_hash)
+            hs = hand_string.format(name=name, cards=unhashed)
+            self.current_game.my_cards = hs
+            return hs, MY_CARD_COLOUR
+        else:
+            hs = hand_string.format(name=name, cards=card_hash)
+            return  hs, CARD_COLOUR
+
+    def process_add_player(self, name, key, start_chips):
+        p = Player(name, key, start_chips)
+        if p.name not in [pl.name for pl in self.players]:
+            self.players.append(p)
+            async_write(self.start_game_request(0)) # eek not threadsafe
+            return "{p.name} joined table with {p.chips} chips.".format(p=p), WARNING_COLOUR
+        else:
+            return "{p.name} rejoined the table.".format(p=p), WARNING_COLOUR
+
+    def process_move(self, moves):
+        self.current_game.advance_player()
+        return " ".join(moves), WHITE
+
+    def process(self, move):
         m = move.split()
         processed_move = ("", WHITE)
         
         if m[0] == "hands":
-            if m[1] == PLAYER.name:
-                m[3] = PLAYER.unhash(m[3])
-                processed_move = (" ".join(m), MY_CARD_COLOUR)
-            else:
-                processed_move = (" ".join(m), CARD_COLOUR)
-
-            self.start_game = False
-            player = next((p for p in self.players if p.name == m[1]),None)
-            self.current_players.append(player)
-
+            processed_move = self.process_hands(m[1], m[3])
         elif m[0] == "add-player":
-            p = Player(m[1], m[2], START_CHIPS)
-            if p.name not in [pl.name for pl in self.players]:
-                self.players.append(p)
-                processed_move =  ("{p.name} joined table with {p.chips} chips.".format(p=p), WARNING_COLOUR)
-            else:
-                processed_move =  ("{p.name} rejoined the table.".format(p=p), WARNING_COLOUR)
-        
+            processed_move = self.process_add_player(m[1], m[2], START_CHIPS)
         elif m[0] == "owner":
-            if self.is_owner:
-                processed_move =  self.process_as_owner(m[1:])
-            else: 
-                processed_move =  (None, WHITE)
-        
-        elif m[0] == "play_request":
-            NEXT_TO_PLAY = m[1]
-            self.prompt = "waiting for {}".format(NEXT_TO_PLAY)
-            processed_move = (None, WHITE)
-
+            processed_move = self.process_as_owner(m[1:]) if self.is_owner else (None, WHITE)
+        elif m[0] == "new_game":
+            if self.ready_to_deal:
+                active_players = [p for p in self.players if p.active_in_tournament]
+                self.current_game = Game(active_players, self.is_owner, int(m[1]))
         elif m[0] == "move":
-            processed_move = " ".join(m[1:]), WHITE
-            if self.is_owner:
-                self.current_game.advance_player()
-                async_write(self.play_request(self.current_game.next_to_play()))
-
-
+            processed_move = self.process_move(m[1:])
         elif m[0] == "show_cards":
             pass
-
         elif m[0] == "chat":
             pass 
-
         else:
             processed_move =  (move, WHITE)
-
-        if self.start_game and len(self.players) > 1:
-            self.prompt = "ready? type D to deal."
-
-            
+        
+        self.set_prompt()
         
         return processed_move
 
-    def start_request(self, p):
-        add_player = "add-player {p.name} {p.key} {p.chips}\n".format(p=p)
-        if self.is_owner:
-            add_player += "master {p.name} is owner\nowner start-game\n".format(p=p)
-        return add_player
-
-    def deal_hands_request(self):
-        return "owner deal-hands\n"
-
-    def play_request(self, name):
-        return "play_request {}\n".format(name)
+    def set_prompt(self):
+        owner_to_deal = self.is_owner and self.ready_to_deal and self.current_game 
+        mid_game = (not self.ready_to_deal) and self.current_game
+        
+        if owner_to_deal and len(self.current_game.players) > 1:
+            self.prompt = ["ready to start? type D to deal."]
+        elif mid_game:
+            hud =[ "waiting for {}".format(self.next_to_play()) ]
+            if self.is_owner:
+                hud.append("KS-2C : 2S-TS-KS-2S-AS : P3750: C5000: L250")
+            self.prompt = hud
 
     def process_as_owner(self, moves):
-        if moves[0] == "start-game":
-            self.start_game = True
-            return (None, WHITE)
-        if moves[0] == "deal-hands":
-            self.current_game = Game([p for p in self.players if p.active_in_tournament], self.is_owner, 0)
-            for c in self.current_game.players:
-                c.active_in_game = True
-            self.current_game.deal_hands()
-            self.prompt = "waiting for {}".format(self.current_game.next_to_play())
-            async_write(self.play_request(self.current_game.next_to_play()))
+        
         return (None, WHITE)
 
+    def deal_hands(self):
+        return self.current_game.deal_hands()
 
+    def add_player_request(self, p):
+        return  "add-player {p.name} {p.key} {p.chips}".format(p=p)
+
+    def start_game_request(self, dealer):
+        return "new_game {dealer}".format(dealer=dealer)
+
+    def next_to_play(self):
+        if self.current_game:
+            return self.current_game.next_to_play()
+        else:
+            return "dealer"
+
+####### ---------- MINOR CLASSES ------------- ######
+### --------------------------------------------- ###
 
 class Game(object):
     def __init__(self, players, is_owner, dealer):
         self.players = players
         self.is_owner = is_owner
         self.deck = Deck() if is_owner else None
-        self.cards = None
+        self.my_cards = None
+        self.shared_careds = []
         self.dealer = dealer
         self.to_play = dealer + 3
 
-        self.deal_hand_message = "hands {name} -> {cards}\n"
-        self.deal_cards_message = "cards {cards}\n"
+        self.deal_hand_message = "hands {name} -> {cards}"
+        self.deal_cards_message = "cards {cards}"
+
+        for c in self.players:
+            c.active_in_game = True
  
     def next_to_play(self):
         return self.players[self.to_play%len(self.players)].name
         # if not owner to play
     def advance_player(self):
         self.to_play += 1
-        
+
     def deal_hands(self):
         for p in self.players:
             cards  = self.deck.deal(2)
             async_write(self.deal_hand_message.format(name=p.name, cards=p.hash("-".join(cards))))
+
+    def process_move(self, move):
         pass
+
 
 class Deck(object):
     suits = "CDHS"
@@ -327,8 +345,6 @@ class Player(object):
         self.cards = None
         self.active_in_game = False
         self.active_in_tournament = True
-    def deal(cards):
-        pass
     def unhash(self, hashed):
         return  "".join(hashed[7:-8])
     def hash(self, to_hash):
@@ -351,7 +367,6 @@ if __name__=="__main__":
     args = vars(build_parser().parse_args())
 
     COMMON_FILE = COMMON_FILE.format(args["game"])
-    PRIVATE_FILE = PRIVATE_FILE.format(args["game"])
     # check_valid_files()
 
     # is this bad? probably...
