@@ -142,15 +142,15 @@ def validate_move(move):
     elif NEXT_TO_PLAY != PLAYER.name:
         raise InvalidCommandError("WAIT YOUR TURN\n", WARNING_COLOUR)
     elif LOOKUP_MOVE_COMMANDS[move[0]]=="RAISE":
-        return "{name} raises {value}"
+        return "move {name} raises {value}"
     elif LOOKUP_MOVE_COMMANDS[move[0]]=="CALL":
-        return "{name} call {value}"
+        return "move {name} call {value}"
     elif LOOKUP_MOVE_COMMANDS[move[0]]=="CHECK":
-        return "{name} checks"
+        return "move {name} checks".format(name=PLAYER.name)
     elif LOOKUP_MOVE_COMMANDS[move[0]]=="FOLD":
-        return "{name} folds"
+        return "move {name} folds".format(name=PLAYER.name)
     elif LOOKUP_MOVE_COMMANDS[move[0]]=="ALL_IN":
-        return "{name} is all in with {value}"
+        return "move {name} is all in with {value}"
     else:
         raise InvalidCommandError("invalid?: {}\n".format(move), WARNING_COLOUR)
 
@@ -198,6 +198,8 @@ class Tournament(object):
         self.prompt = "waiting for players" if is_owner else "waiting for dealer"
         
     def process(self, move):
+        global NEXT_TO_PLAY
+
         m = move.split()
         processed_move = ("", WHITE)
         
@@ -227,13 +229,22 @@ class Tournament(object):
                 processed_move =  (None, WHITE)
         
         elif m[0] == "play_request":
-            self.prompt = "waiting for {}".format(m[1])
-            global NEXT_TO_PLAY
             NEXT_TO_PLAY = m[1]
+            self.prompt = "waiting for {}".format(NEXT_TO_PLAY)
             processed_move = (None, WHITE)
 
         elif m[0] == "move":
+            processed_move = " ".join(m[1:]), WHITE
+            if self.is_owner:
+                self.current_game.advance_player()
+                async_write(self.play_request(self.current_game.next_to_play()))
+
+
+        elif m[0] == "show_cards":
             pass
+
+        elif m[0] == "chat":
+            pass 
 
         else:
             processed_move =  (move, WHITE)
